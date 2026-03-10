@@ -162,6 +162,56 @@ body {
 .carry-input:focus { background: #4e3723; }
 .carry-cell { width: 40px; height: 44px; }
 
+/* Borrow display for subtraction */
+.borrow-cell {
+  position: relative;
+  width: 80px; height: 90px;
+  display: flex; align-items: center; justify-content: center;
+}
+.borrow-cell .borrow-adjusted {
+  font-size: 72px; font-weight: bold;
+}
+.borrow-cell .borrow-tag {
+  position: absolute; top: 2px; right: 2px;
+  font-size: 14px; color: #ff9800; font-weight: bold;
+  background: rgba(255,152,0,0.15); border-radius: 4px; padding: 1px 4px;
+  line-height: 1.2;
+}
+.borrow-lent-cell {
+  position: relative;
+  width: 80px; height: 90px;
+  display: flex; align-items: center; justify-content: center;
+}
+.borrow-lent-cell .original-digit {
+  font-size: 48px; font-weight: bold; opacity: 0.35;
+  text-decoration: line-through;
+  position: absolute; left: 8px; top: 8px;
+}
+.borrow-lent-cell .adjusted-digit {
+  font-size: 72px; font-weight: bold;
+}
+
+/* Per-cell instant feedback toast */
+.cell-feedback {
+  margin-top: 12px; padding: 10px 18px;
+  border-radius: 8px; font-size: 1.1rem;
+  text-align: center; max-width: 500px;
+  transition: opacity 0.5s ease;
+}
+.cell-feedback.correct-feedback {
+  background: #1b5e20; border: 2px solid #66bb6a; color: #c8e6c9;
+}
+.cell-feedback.wrong-feedback {
+  background: #1a237e; border: 2px solid #5c6bc0; color: #c5cae9;
+}
+.cell-feedback.wrong-feedback-step {
+  background: #1b5e20; border: 2px solid #66bb6a; color: #c8e6c9;
+}
+.cell-feedback.wrong-feedback-full {
+  background: #e65100; border: 2px solid #ff9800; color: #ffe0b2;
+}
+.cell-feedback.fade-out { opacity: 0; }
+
 /* Mode A: single answer input */
 .answer-single-input {
   width: 300px; height: 86px;
@@ -308,6 +358,11 @@ body {
   .carry-input { width: 32px; height: 36px; font-size: 22px; }
   .carry-cell { width: 32px; height: 36px; }
   .answer-single-input { width: 220px; height: 64px; font-size: 44px; }
+  .borrow-cell, .borrow-lent-cell { width: 56px; height: 64px; }
+  .borrow-cell .borrow-adjusted { font-size: 48px; }
+  .borrow-cell .borrow-tag { font-size: 11px; }
+  .borrow-lent-cell .original-digit { font-size: 32px; }
+  .borrow-lent-cell .adjusted-digit { font-size: 48px; }
 }
 </style>
 </head>
@@ -404,6 +459,20 @@ body {
   </div>
 
   <div class="form-group">
+    <label>語音設定（TTS）</label>
+    <div class="toggle-row" style="margin-bottom:12px;">
+      <div class="toggle-switch" id="tts-toggle" onclick="toggleSwitch(this)">
+        <div class="knob"></div>
+      </div>
+      <span id="tts-label">關閉</span>
+    </div>
+    <div id="tts-rate-group" style="display:none;">
+      <label style="font-size:0.9rem; color:#90caf9; margin-bottom:4px;">語速：<span id="tts-rate-value">1.0</span>x</label>
+      <input type="range" id="tts-rate" min="0.5" max="2.0" step="0.1" value="1.0" style="width:100%; accent-color:#64b5f6;" oninput="document.getElementById('tts-rate-value').textContent = this.value">
+    </div>
+  </div>
+
+  <div class="form-group">
     <label>Google Sheets Script URL（選填）</label>
     <input type="url" id="sheets-url" placeholder="https://script.google.com/macros/s/...">
   </div>
@@ -418,6 +487,7 @@ body {
     <div class="top-bar-right">
       <span id="timer-display">00:00</span>
       <button id="mute-btn" onclick="toggleMute()">🔊</button>
+      <button id="tts-btn" onclick="toggleTTS()" style="background:none; border:2px solid #546e7a; border-radius:8px; color:#fff; font-size:1.2rem; padding:6px 10px; cursor:pointer;" title="語音朗讀">🔇</button>
       <button id="abandon-btn" onclick="abandonPractice()" style="background:#c62828; color:#fff; border:none; border-radius:8px; padding:6px 14px; font-size:1rem; cursor:pointer;">放棄</button>
     </div>
   </div>
@@ -448,6 +518,47 @@ let retryAllowed = false;
 // For guided mode state
 let guidedStep = 0;
 
+// ===== TTS STATE =====
+let ttsEnabled = false;
+let ttsRate = 1.0;
+let ttsVoice = null;
+
+// Initialize TTS voices
+function initTTSVoices() {
+  try {
+    if (!window.speechSynthesis) return;
+    const pickVoice = () => {
+      const voices = speechSynthesis.getVoices();
+      ttsVoice = voices.find(v => v.lang === 'zh-TW')
+        || voices.find(v => v.lang.startsWith('zh'))
+        || null;
+    };
+    pickVoice();
+    if (speechSynthesis.onvoiceschanged !== undefined) {
+      speechSynthesis.onvoiceschanged = pickVoice;
+    }
+  } catch (e) {}
+}
+initTTSVoices();
+
+function speak(text) {
+  if (!ttsEnabled) return;
+  try {
+    if (!window.speechSynthesis) return;
+    speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = 'zh-TW';
+    utter.rate = ttsRate;
+    if (ttsVoice) utter.voice = ttsVoice;
+    speechSynthesis.speak(utter);
+  } catch (e) {}
+}
+
+function toggleTTS() {
+  ttsEnabled = !ttsEnabled;
+  document.getElementById('tts-btn').textContent = ttsEnabled ? '🔊' : '🔇';
+}
+
 // ===== SETUP HELPERS =====
 function toggleSwitch(el) {
   el.classList.toggle('on');
@@ -459,6 +570,11 @@ function toggleSwitch(el) {
     document.getElementById('timer-label').textContent = on ? '限時' : '不限時';
     document.getElementById('timer-minutes').style.display = on ? '' : 'none';
     document.getElementById('timer-minutes-label').style.display = on ? '' : 'none';
+  }
+  if (el.id === 'tts-toggle') {
+    const on = el.classList.contains('on');
+    document.getElementById('tts-label').textContent = on ? '開啟' : '關閉';
+    document.getElementById('tts-rate-group').style.display = on ? '' : 'none';
   }
 }
 
@@ -491,7 +607,9 @@ function readConfig() {
     timerMinutes: timerOn ? parseInt(document.getElementById('timer-minutes').value) || 5 : 0,
     scaffold: getRadioValue('scaffold'),
     mode: getRadioValue('mode'),
-    sheetsUrl: document.getElementById('sheets-url').value.trim()
+    sheetsUrl: document.getElementById('sheets-url').value.trim(),
+    ttsEnabled: document.getElementById('tts-toggle').classList.contains('on'),
+    ttsRate: parseFloat(document.getElementById('tts-rate').value) || 1.0
   };
 }
 
@@ -763,6 +881,9 @@ function showScreen(id) {
 function startPractice() {
   config = readConfig();
   if (!config) return;
+  ttsEnabled = config.ttsEnabled;
+  ttsRate = config.ttsRate;
+  document.getElementById('tts-btn').textContent = ttsEnabled ? '🔊' : '🔇';
   generateAllProblems();
   currentIdx = 0;
   results = [];
@@ -791,6 +912,10 @@ function showProblem() {
   guidedStep = 0;
   document.getElementById('progress-info').textContent = `第 ${currentIdx + 1} / ${problems.length} 題`;
 
+  // TTS: announce the problem
+  const opNames = { '+': '加', '-': '減', '×': '乘以', '÷': '除以' };
+  speak(`第${currentIdx + 1}題，${currentProblem.a} ${opNames[currentProblem.op] || ''} ${currentProblem.b}`);
+
   const area = document.getElementById('problem-area');
 
   if (currentProblem.op === '÷') {
@@ -809,20 +934,23 @@ function renderStandard(area) {
   const bStr = String(p.b);
   const ansStr = String(p.answer);
   const maxLen = Math.max(aStr.length, bStr.length, ansStr.length);
-  // Might need extra column for carry or overflow
   const totalCols = maxLen + 1; // +1 for op or overflow
 
   const needCarry = (p.op === '+' || p.op === '×');
   const needBorrow = (p.op === '-');
 
-  let html = '';
+  // Precompute borrow info for subtraction
+  let borrowInfo = null;
+  if (needBorrow && config.mode === 'guided') {
+    borrowInfo = precomputeBorrow(p.a, p.b);
+  }
 
-  // Grid with columns: [op/carry-overflow] [pos maxLen-1] ... [pos 0]
+  let html = '';
   const colCount = totalCols;
   html += `<div class="vertical-problem" style="grid-template-columns: repeat(${colCount}, 80px);" id="vp-grid">`;
 
-  // Row 0: Carry row (for add) / borrow row (for sub) - small boxes
-  if (config.mode === 'guided' && (needCarry || needBorrow)) {
+  // Row 0: Carry row (only for addition in guided mode)
+  if (config.mode === 'guided' && needCarry) {
     for (let c = 0; c < colCount; c++) {
       const pos = colCount - 1 - c;
       if (pos > 0 && pos <= maxLen) {
@@ -833,12 +961,40 @@ function renderStandard(area) {
     }
   }
 
-  // Row 1: First number (right-aligned)
+  // Row 1: First number (right-aligned) — with borrow visuals for subtraction
   for (let c = 0; c < colCount; c++) {
     const pos = colCount - 1 - c;
     const digitIdx = aStr.length - 1 - pos;
     if (c === 0) {
       html += `<div class="cell"></div>`;
+    } else if (digitIdx >= 0 && digitIdx < aStr.length && borrowInfo && pos < borrowInfo.length) {
+      const bi = borrowInfo[pos];
+      if (bi.needsBorrow && bi.lentToLower) {
+        // Both borrowed from above AND needs to borrow from next: show strikethrough original, adjusted+10
+        html += `<div class="borrow-cell ${posClass(pos)}">`;
+        html += `<span class="original-digit">${bi.originalDigit}</span>`;
+        html += `<span class="borrow-adjusted">${bi.displayDigit}</span>`;
+        html += `<span class="borrow-tag">借10</span>`;
+        html += `</div>`;
+      } else if (bi.needsBorrow) {
+        // Needs to borrow: show adjusted digit (original+10 minus any prior borrow) with 借10 tag
+        html += `<div class="borrow-cell ${posClass(pos)}">`;
+        if (bi.borrowedFrom) {
+          html += `<span class="original-digit">${bi.originalDigit}</span>`;
+        }
+        html += `<span class="borrow-adjusted">${bi.displayDigit}</span>`;
+        html += `<span class="borrow-tag">借10</span>`;
+        html += `</div>`;
+      } else if (bi.lentToLower) {
+        // Lent to lower position: show strikethrough original, adjusted digit (original-1)
+        html += `<div class="borrow-lent-cell ${posClass(pos)}">`;
+        html += `<span class="original-digit">${bi.originalDigit}</span>`;
+        html += `<span class="adjusted-digit">${bi.displayDigit}</span>`;
+        html += `</div>`;
+      } else {
+        // Normal digit
+        html += `<div class="cell ${posClass(pos)}">${aStr[digitIdx]}</div>`;
+      }
     } else if (digitIdx >= 0 && digitIdx < aStr.length) {
       html += `<div class="cell ${posClass(pos)}">${aStr[digitIdx]}</div>`;
     } else {
@@ -864,18 +1020,17 @@ function renderStandard(area) {
 
   // Row 4: Answer
   if (config.mode === 'direct') {
-    // Single input spanning answer area
     html += `<div style="grid-column: 1 / -1; display: flex; justify-content: flex-end; padding: 4px 0;">`;
     html += `<input class="answer-single-input" id="answer-direct" type="number" inputmode="numeric" autofocus>`;
     html += `</div>`;
   } else {
-    // Guided: individual digit inputs
+    // Guided: individual digit inputs (answer only, no carry inputs for subtraction)
     for (let c = 0; c < colCount; c++) {
       const pos = colCount - 1 - c;
       const digitIdx = ansStr.length - 1 - pos;
       if (digitIdx >= 0 && digitIdx < ansStr.length) {
-        const locked = pos !== 0; // start from ones
-        html += `<div class="cell"><input class="digit-input ${posClass(pos)} ${locked ? 'locked' : ''}" id="ans-${pos}" maxlength="1" inputmode="numeric" data-pos="${pos}" ${locked ? 'disabled' : ''} ${pos === 0 ? 'autofocus' : ''}></div>`;
+        const locked = pos !== 0;
+        html += `<div class="cell"><input class="digit-input ${posClass(pos)} ${locked ? 'locked' : ''}" id="ans-${pos}" maxlength="2" inputmode="numeric" data-pos="${pos}" ${locked ? 'disabled' : ''} ${pos === 0 ? 'autofocus' : ''}></div>`;
       } else {
         html += `<div class="cell"></div>`;
       }
@@ -884,7 +1039,10 @@ function renderStandard(area) {
 
   html += '</div>';
 
-  // Scaffold area
+  // Per-cell feedback area
+  html += '<div id="cell-feedback-area"></div>';
+
+  // Scaffold area (kept for direct mode)
   html += '<div id="scaffold-area"></div>';
 
   // Confirm button
@@ -894,7 +1052,6 @@ function renderStandard(area) {
 
   area.innerHTML = html;
 
-  // Auto focus
   setTimeout(() => {
     const focusEl = config.mode === 'direct'
       ? document.getElementById('answer-direct')
@@ -902,7 +1059,6 @@ function renderStandard(area) {
     if (focusEl) focusEl.focus();
   }, 100);
 
-  // Enter key for direct mode
   if (config.mode === 'direct') {
     const input = document.getElementById('answer-direct');
     if (input) {
@@ -912,7 +1068,6 @@ function renderStandard(area) {
     }
   }
 
-  // Guided mode: setup digit-by-digit
   if (config.mode === 'guided') {
     setupGuidedListeners();
   }
@@ -926,22 +1081,131 @@ function parseDigitValue(val) {
   return parseInt(normalized, 10);
 }
 
+// Per-cell feedback display
+function showCellFeedback(pos, isCorrect, message) {
+  const area = document.getElementById('cell-feedback-area');
+  if (!area) return;
+  // Clear previous feedback
+  area.innerHTML = '';
+  let cssClass = 'cell-feedback ';
+  if (isCorrect) {
+    cssClass += 'correct-feedback';
+  } else {
+    if (config.scaffold === 'step') cssClass += 'wrong-feedback-step';
+    else if (config.scaffold === 'full') cssClass += 'wrong-feedback-full';
+    else cssClass += 'wrong-feedback';
+  }
+  const div = document.createElement('div');
+  div.className = cssClass;
+  div.innerHTML = message;
+  area.appendChild(div);
+  // TTS: speak feedback (strip HTML tags)
+  speak(message.replace(/<[^>]*>/g, ''));
+  if (isCorrect) {
+    setTimeout(() => { div.classList.add('fade-out'); }, 1500);
+    setTimeout(() => { if (div.parentNode) div.remove(); }, 2000);
+  }
+}
+
+function getCellHintMessage(p, pos, borrowInfo) {
+  const posName = posLabel(pos);
+  if (p.op === '+') {
+    const da = getDigitAt(p.a, pos);
+    const db = getDigitAt(p.b, pos);
+    const carries = computeCarries(p);
+    // Check if there's incoming carry from previous position
+    let carryIn = 0;
+    if (pos > 0) {
+      let c = 0;
+      for (let pp = 0; pp < pos; pp++) {
+        const sum = getDigitAt(p.a, pp) + getDigitAt(p.b, pp) + c;
+        c = Math.floor(sum / 10);
+      }
+      carryIn = c;
+    }
+    const sum = da + db + carryIn;
+    const result = sum % 10;
+    if (config.scaffold === 'rethink') {
+      return `這格再想想喔！`;
+    } else if (config.scaffold === 'step') {
+      const carryText = carryIn > 0 ? ` + 進位${carryIn}` : '';
+      return `${posName}位：${da} + ${db}${carryText} = ${sum}，想想看`;
+    } else {
+      const carryText = carryIn > 0 ? ` + 進位${carryIn}` : '';
+      return `${posName}位：${da} + ${db}${carryText} = ${sum}，答案是 ${result}`;
+    }
+  } else if (p.op === '-') {
+    const bi = borrowInfo ? borrowInfo[pos] : null;
+    const db = getDigitAt(p.b, pos);
+    const displayDigit = bi ? bi.displayDigit : getDigitAt(p.a, pos);
+    const result = displayDigit - db;
+    if (config.scaffold === 'rethink') {
+      return `這格再想想喔！`;
+    } else if (config.scaffold === 'step') {
+      return `${posName}位：${displayDigit} - ${db} = ${result}，想想看`;
+    } else {
+      return `${posName}位：${displayDigit} - ${db} = ${result}，答案是 ${result}`;
+    }
+  } else if (p.op === '×') {
+    if (config.scaffold === 'rethink') return `這格再想想喔！`;
+    return `想想看 ${p.a} × ${p.b} 的${posName}位是多少`;
+  }
+  return `這格再想想喔！`;
+}
+
+function getCorrectCellMessage(p, pos, borrowInfo) {
+  const posName = posLabel(pos);
+  if (p.op === '+') {
+    const da = getDigitAt(p.a, pos);
+    const db = getDigitAt(p.b, pos);
+    let carryIn = 0;
+    if (pos > 0) {
+      let c = 0;
+      for (let pp = 0; pp < pos; pp++) {
+        const sum = getDigitAt(p.a, pp) + getDigitAt(p.b, pp) + c;
+        c = Math.floor(sum / 10);
+      }
+      carryIn = c;
+    }
+    const carryText = carryIn > 0 ? ` + ${carryIn}` : '';
+    const sum = da + db + carryIn;
+    return `✓ 對了！${posName}位 ${da} + ${db}${carryText} = ${sum % 10}`;
+  } else if (p.op === '-') {
+    const bi = borrowInfo ? borrowInfo[pos] : null;
+    const db = getDigitAt(p.b, pos);
+    const displayDigit = bi ? bi.displayDigit : getDigitAt(p.a, pos);
+    const result = displayDigit - db;
+    return `✓ 對了！${posName}位 ${displayDigit} - ${db} = ${result}`;
+  } else if (p.op === '×') {
+    const result = getDigitAt(p.answer, pos);
+    return `✓ 對了！${posName}位是 ${result}`;
+  }
+  return `✓ 對了！`;
+}
+
 function setupGuidedListeners() {
   const p = currentProblem;
   const ansStr = String(p.answer);
+  const needBorrow = (p.op === '-');
 
-  // Compute expected carry/borrow for each position
+  // Compute expected carry for addition
   const carries = computeCarries(p);
+
+  // Precompute borrow info for subtraction
+  let borrowInfo = null;
+  if (needBorrow) {
+    borrowInfo = precomputeBorrow(p.a, p.b);
+  }
 
   const handleDigitInput = (pos) => {
     const input = document.getElementById(`ans-${pos}`);
     if (!input) return;
-    input.addEventListener('input', () => {
+
+    const onInput = () => {
       const rawVal = input.value.trim();
       if (rawVal === '') return;
 
       const parsed = parseDigitValue(rawVal);
-      // Replace with cleaned value
       if (isNaN(parsed)) { input.value = ''; return; }
       input.value = String(parsed % 10);
 
@@ -949,48 +1213,61 @@ function setupGuidedListeners() {
       if (parsed % 10 === expectedDigit) {
         input.classList.add('correct-cell');
         input.disabled = true;
+        input.removeEventListener('input', onInput);
+        input.removeEventListener('keydown', onKeydown);
         playCorrectSound();
+        showCellFeedback(pos, true, getCorrectCellMessage(p, pos, borrowInfo));
 
-        // Check if carry/borrow needed
-        const carryInput = document.getElementById(`carry-${pos + 1}`);
-        if (carryInput && carries[pos + 1] !== undefined && carries[pos + 1] !== 0) {
-          carryInput.disabled = false;
-          carryInput.focus();
-          // Use a one-time approach: remove old listener if any
-          const carryHandler = () => {
-            const carryVal = parseDigitValue(carryInput.value);
-            if (isNaN(carryVal)) { carryInput.value = ''; return; }
-            carryInput.value = String(carryVal);
-            if (carryVal === carries[pos + 1]) {
-              carryInput.disabled = true;
-              carryInput.style.background = '#2e7d32';
-              carryInput.removeEventListener('input', carryHandler);
-              unlockNext(pos + 1);
-            } else {
-              shakeElement(carryInput);
-              carryInput.value = '';
-            }
-          };
-          carryInput.addEventListener('input', carryHandler);
-        } else {
-          unlockNext(pos + 1);
+        // For addition: handle carry input before moving to next
+        if (p.op === '+') {
+          const carryInput = document.getElementById(`carry-${pos + 1}`);
+          if (carryInput && carries[pos + 1] !== undefined && carries[pos + 1] !== 0) {
+            carryInput.disabled = false;
+            carryInput.focus();
+            const carryHandler = () => {
+              const carryVal = parseDigitValue(carryInput.value);
+              if (isNaN(carryVal)) { carryInput.value = ''; return; }
+              carryInput.value = String(carryVal);
+              if (carryVal === carries[pos + 1]) {
+                carryInput.disabled = true;
+                carryInput.style.background = '#2e7d32';
+                carryInput.removeEventListener('input', carryHandler);
+                unlockNext(pos + 1);
+              } else {
+                shakeElement(carryInput);
+                carryInput.value = '';
+              }
+            };
+            carryInput.addEventListener('input', carryHandler);
+            return;
+          }
         }
+        // For subtraction: skip carry, go directly to next
+        unlockNext(pos + 1);
       } else {
-        // Wrong
+        // Wrong answer for this cell
         shakeElement(input);
         playWrongSound();
         input.value = '';
-        showScaffold(pos);
+        showCellFeedback(pos, false, getCellHintMessage(p, pos, borrowInfo));
       }
-    });
+    };
+
+    const onKeydown = (e) => {
+      if (e.key === 'Enter') {
+        onInput();
+      }
+    };
+
+    input.addEventListener('input', onInput);
+    input.addEventListener('keydown', onKeydown);
   };
 
   const unlockNext = (nextPos) => {
-    // Only unlock if this position exists in the answer
     if (nextPos >= ansStr.length) {
-      // All digits completed
       playCorrectSound();
       showStars();
+      speak('答對了！');
       results.push({ problem: p, studentAnswer: p.answer, correct: true, time: elapsedSeconds });
       setTimeout(nextProblem, 800);
       return;
@@ -1002,9 +1279,9 @@ function setupGuidedListeners() {
       nextInput.focus();
       handleDigitInput(nextPos);
     } else {
-      // All done (no more inputs)
       playCorrectSound();
       showStars();
+      speak('答對了！');
       results.push({ problem: p, studentAnswer: p.answer, correct: true, time: elapsedSeconds });
       setTimeout(nextProblem, 800);
     }
@@ -1030,13 +1307,44 @@ function computeCarries(p) {
       let diff = getDigitAt(p.a, pos) - getDigitAt(p.b, pos) - borrow;
       if (diff < 0) {
         borrow = 1;
-        carries[pos + 1] = 1; // borrow from next
+        carries[pos + 1] = 1;
       } else {
         borrow = 0;
       }
     }
   }
   return carries;
+}
+
+// Precompute borrow info for subtraction: returns per-position info
+function precomputeBorrow(a, b) {
+  const aLen = String(a).length;
+  const borrowInfo = []; // borrowInfo[pos] = { needsBorrow, lentToLower, displayDigit, originalDigit }
+  let borrow = 0;
+  for (let pos = 0; pos < aLen; pos++) {
+    const da = getDigitAt(a, pos);
+    const db = getDigitAt(b, pos);
+    const effective = da - borrow;
+    const info = { originalDigit: da, lentToLower: false, needsBorrow: false, displayDigit: da, borrowedFrom: borrow > 0 };
+    if (effective < db) {
+      // This position needs to borrow from next
+      info.needsBorrow = true;
+      info.displayDigit = effective + 10;
+      borrow = 1;
+    } else {
+      info.displayDigit = effective;
+      info.needsBorrow = false;
+      borrow = 0;
+    }
+    borrowInfo[pos] = info;
+  }
+  // Mark which positions lent (had borrow taken from them)
+  for (let pos = 0; pos < aLen; pos++) {
+    if (borrowInfo[pos].needsBorrow && pos + 1 < aLen) {
+      borrowInfo[pos + 1].lentToLower = true;
+    }
+  }
+  return borrowInfo;
 }
 
 // ===== CHECK ANSWER (DIRECT MODE) =====
@@ -1052,6 +1360,7 @@ function checkAnswerDirect() {
     // Correct!
     playCorrectSound();
     showStars();
+    speak('答對了！');
     input.style.borderColor = '#43a047';
     input.style.background = '#1b3a1b';
     results.push({ problem: p, studentAnswer: val, correct: true, time: elapsedSeconds });
@@ -1082,7 +1391,7 @@ function checkAnswerDirect() {
   }
 }
 
-// ===== SCAFFOLD =====
+// ===== SCAFFOLD (used for direct mode and multiplication guided) =====
 function showScaffold(pos) {
   const area = document.getElementById('scaffold-area');
   if (!area) return;
@@ -1104,6 +1413,9 @@ function showScaffold(pos) {
   }
 
   area.innerHTML = html;
+  // TTS: speak scaffold hint (strip HTML tags)
+  const textContent = area.textContent || area.innerText || '';
+  if (textContent) speak(textContent);
 }
 
 function getStepHint(p, pos) {
@@ -1247,6 +1559,7 @@ function checkDivisionGuided() {
   if (val === p.answer) {
     playCorrectSound();
     showStars();
+    speak('答對了！');
     results.push({ problem: p, studentAnswer: val, correct: true, time: elapsedSeconds });
     setTimeout(nextProblem, 800);
   } else {
@@ -1398,6 +1711,7 @@ function checkMultStep(step) {
     if (val === answer) {
       playCorrectSound();
       showStars();
+      speak('答對了！');
       results.push({ problem: currentProblem, studentAnswer: val, correct: true, time: elapsedSeconds });
       setTimeout(nextProblem, 800);
     } else {
@@ -1440,6 +1754,7 @@ function finishPractice() {
 
   playCelebrationSound();
   showConfetti();
+  speak('恭喜你全部完成了！');
   showScreen('result-screen');
   renderResults();
 }
