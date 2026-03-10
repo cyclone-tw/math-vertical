@@ -5,7 +5,7 @@
 ### 前置需求
 
 - 安裝 [clasp](https://github.com/google/clasp)：`npm install -g @google/clasp`
-- Google 帳號：cyclonetw@gmail.com
+- Google 帳號：（填入你的 Google 帳號）
 
 ### 步驟
 
