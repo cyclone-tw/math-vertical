@@ -504,6 +504,7 @@ let currentProblem = null;
 let retryAllowed = false;
 // For guided mode state
 let guidedStep = 0;
+let cellRetryCount = {}; // Track per-cell wrong attempts for scaffold escalation
 
 // ===== TTS STATE =====
 let ttsEnabled = false;
@@ -513,32 +514,53 @@ let ttsVoice = null;
 // Initialize TTS voices
 function initTTSVoices() {
   try {
-    if (!window.speechSynthesis) return;
+    if (!window.speechSynthesis) { console.warn('[TTS] speechSynthesis not supported'); return; }
     const pickVoice = () => {
       const voices = speechSynthesis.getVoices();
+      console.log('[TTS] available voices:', voices.length, voices.filter(v => v.lang.startsWith('zh')).map(v => `${v.name}(${v.lang})`));
       ttsVoice = voices.find(v => v.lang === 'zh-TW')
+        || voices.find(v => v.lang === 'zh-HK')
         || voices.find(v => v.lang.startsWith('zh'))
         || null;
+      if (ttsVoice) console.log('[TTS] selected voice:', ttsVoice.name, ttsVoice.lang);
+      else console.warn('[TTS] no Chinese voice found, will use lang attribute fallback');
     };
     pickVoice();
     if (speechSynthesis.onvoiceschanged !== undefined) {
       speechSynthesis.onvoiceschanged = pickVoice;
     }
-  } catch (e) {}
+  } catch (e) { console.error('[TTS] initTTSVoices error:', e); }
 }
 initTTSVoices();
 
 function speak(text) {
   if (!ttsEnabled) return;
   try {
-    if (!window.speechSynthesis) return;
+    if (!window.speechSynthesis) { console.warn('[TTS] speechSynthesis not available'); return; }
+    console.log('[TTS] speak:', text, '| speaking:', speechSynthesis.speaking, '| pending:', speechSynthesis.pending, '| paused:', speechSynthesis.paused);
     speechSynthesis.cancel();
     const utter = new SpeechSynthesisUtterance(text);
-    utter.lang = 'zh-TW';
     utter.rate = ttsRate;
-    if (ttsVoice) utter.voice = ttsVoice;
+    // Try zh-TW first, fallback to zh
+    if (ttsVoice) {
+      utter.voice = ttsVoice;
+      utter.lang = ttsVoice.lang;
+    } else {
+      utter.lang = 'zh-TW';
+    }
+    utter.onerror = (e) => {
+      console.warn('[TTS] utterance error:', e.error);
+      // Fallback: retry with lang='zh' if zh-TW failed
+      if (utter.lang === 'zh-TW') {
+        console.log('[TTS] retrying with lang=zh');
+        const retry = new SpeechSynthesisUtterance(text);
+        retry.lang = 'zh';
+        retry.rate = ttsRate;
+        speechSynthesis.speak(retry);
+      }
+    };
     speechSynthesis.speak(utter);
-  } catch (e) {}
+  } catch (e) { console.error('[TTS] speak error:', e); }
 }
 
 function toggleTTS() {
@@ -547,25 +569,50 @@ function toggleTTS() {
 }
 
 function unlockSpeechSynthesis() {
+  // Must be called synchronously in a user gesture (click) handler
   try {
-    if (!window.speechSynthesis) return;
+    if (!window.speechSynthesis) { console.warn('[TTS] unlock: speechSynthesis not available'); return; }
+    speechSynthesis.cancel();
     const utter = new SpeechSynthesisUtterance('');
     utter.volume = 0;
     utter.lang = 'zh-TW';
+    console.log('[TTS] unlocking speechSynthesis (synchronous in click handler)');
     speechSynthesis.speak(utter);
-  } catch (e) {}
+  } catch (e) { console.error('[TTS] unlock error:', e); }
 }
 
 function testTTS() {
+  // Called directly from button onclick — synchronous in user gesture
   try {
     if (!window.speechSynthesis) { showToast('此瀏覽器不支援語音'); return; }
+    console.log('[TTS] testTTS: speaking:', speechSynthesis.speaking, '| pending:', speechSynthesis.pending, '| paused:', speechSynthesis.paused);
     speechSynthesis.cancel();
-    const utter = new SpeechSynthesisUtterance('語音測試');
-    utter.lang = 'zh-TW';
-    utter.rate = parseFloat(document.getElementById('tts-rate').value) || 1.0;
-    if (ttsVoice) utter.voice = ttsVoice;
+    const rate = parseFloat(document.getElementById('tts-rate').value) || 1.0;
+    const utter = new SpeechSynthesisUtterance('語音測試，一二三');
+    utter.rate = rate;
+    if (ttsVoice) {
+      utter.voice = ttsVoice;
+      utter.lang = ttsVoice.lang;
+    } else {
+      utter.lang = 'zh-TW';
+    }
+    utter.onerror = (e) => {
+      console.warn('[TTS] test error:', e.error);
+      // Fallback: retry with lang='zh'
+      if (utter.lang === 'zh-TW') {
+        console.log('[TTS] test retrying with lang=zh');
+        const retry = new SpeechSynthesisUtterance('語音測試，一二三');
+        retry.lang = 'zh';
+        retry.rate = rate;
+        speechSynthesis.speak(retry);
+      } else {
+        showToast('語音測試失敗');
+      }
+    };
+    // Speak synchronously in click handler — no setTimeout/Promise wrapping
     speechSynthesis.speak(utter);
-  } catch (e) { showToast('語音測試失敗'); }
+    console.log('[TTS] testTTS: utterance queued');
+  } catch (e) { console.error('[TTS] testTTS error:', e); showToast('語音測試失敗'); }
 }
 
 // ===== SETUP HELPERS =====
@@ -921,6 +968,7 @@ function showProblem() {
   currentProblem = problems[currentIdx];
   retryAllowed = false;
   guidedStep = 0;
+  cellRetryCount = {};
   document.getElementById('progress-info').textContent = `第 ${currentIdx + 1} / ${problems.length} 題`;
 
   // TTS: announce the problem
@@ -1085,17 +1133,18 @@ function parseDigitValue(val) {
 }
 
 // Per-cell feedback display
-function showCellFeedback(pos, isCorrect, message) {
+function showCellFeedback(pos, isCorrect, message, effectiveScaffold) {
   const area = document.getElementById('cell-feedback-area');
   if (!area) return;
+  const scaffold = effectiveScaffold || config.scaffold;
   // Clear previous feedback
   area.innerHTML = '';
   let cssClass = 'cell-feedback ';
   if (isCorrect) {
     cssClass += 'correct-feedback';
   } else {
-    if (config.scaffold === 'step') cssClass += 'wrong-feedback-step';
-    else if (config.scaffold === 'full') cssClass += 'wrong-feedback-full';
+    if (scaffold === 'step') cssClass += 'wrong-feedback-step';
+    else if (scaffold === 'full') cssClass += 'wrong-feedback-full';
     else cssClass += 'wrong-feedback';
   }
   const div = document.createElement('div');
@@ -1110,12 +1159,12 @@ function showCellFeedback(pos, isCorrect, message) {
   }
 }
 
-function getCellHintMessage(p, pos, borrowInfo) {
+function getCellHintMessage(p, pos, borrowInfo, effectiveScaffold) {
+  const scaffold = effectiveScaffold || config.scaffold;
   const posName = posLabel(pos);
   if (p.op === '+') {
     const da = getDigitAt(p.a, pos);
     const db = getDigitAt(p.b, pos);
-    const carries = computeCarries(p);
     // Check if there's incoming carry from previous position
     let carryIn = 0;
     if (pos > 0) {
@@ -1128,13 +1177,12 @@ function getCellHintMessage(p, pos, borrowInfo) {
     }
     const sum = da + db + carryIn;
     const result = sum % 10;
-    if (config.scaffold === 'rethink') {
-      return `這格再想想喔！`;
-    } else if (config.scaffold === 'step') {
-      const carryText = carryIn > 0 ? ` + 進位${carryIn}` : '';
-      return `${posName}位：${da} + ${db}${carryText} = ${sum}，想想看`;
+    const carryText = carryIn > 0 ? ` + 進位${carryIn}` : '';
+    if (scaffold === 'rethink') {
+      return `再想想喔！`;
+    } else if (scaffold === 'step') {
+      return `${posName}位：${da} + ${db}${carryText} = ?，想想看`;
     } else {
-      const carryText = carryIn > 0 ? ` + 進位${carryIn}` : '';
       return `${posName}位：${da} + ${db}${carryText} = ${sum}，答案是 ${result}`;
     }
   } else if (p.op === '-') {
@@ -1142,18 +1190,21 @@ function getCellHintMessage(p, pos, borrowInfo) {
     const db = getDigitAt(p.b, pos);
     const displayDigit = bi ? bi.displayDigit : getDigitAt(p.a, pos);
     const result = displayDigit - db;
-    if (config.scaffold === 'rethink') {
-      return `這格再想想喔！`;
-    } else if (config.scaffold === 'step') {
-      return `${posName}位：${displayDigit} - ${db} = ${result}，想想看`;
+    const borrowNote = bi && bi.needsBorrow ? '（借入10）' : (bi && bi.lentToLower ? '（借出1）' : '');
+    if (scaffold === 'rethink') {
+      return `再想想喔！`;
+    } else if (scaffold === 'step') {
+      return `${posName}位：${displayDigit} - ${db} = ?，再算算`;
     } else {
       return `${posName}位：${displayDigit} - ${db} = ${result}，答案是 ${result}`;
     }
   } else if (p.op === '×') {
-    if (config.scaffold === 'rethink') return `這格再想想喔！`;
-    return `想想看 ${p.a} × ${p.b} 的${posName}位是多少`;
+    if (scaffold === 'rethink') return `再想想喔！`;
+    if (scaffold === 'step') return `想想看 ${p.a} × ${p.b} 的${posName}位是多少`;
+    const expectedDigit = getDigitAt(p.answer, pos);
+    return `${posName}位答案是 ${expectedDigit}`;
   }
-  return `這格再想想喔！`;
+  return `再想想喔！`;
 }
 
 function getCorrectCellMessage(p, pos, borrowInfo) {
@@ -1249,10 +1300,37 @@ function setupGuidedListeners() {
         unlockNext(pos + 1);
       } else {
         // Wrong answer for this cell
+        if (!cellRetryCount[pos]) cellRetryCount[pos] = 0;
+        cellRetryCount[pos]++;
+
+        // Determine effective scaffold level
+        let effectiveScaffold = config.scaffold;
+        if (config.scaffold === 'rethink' && cellRetryCount[pos] >= 2) {
+          // Escalate: after 2 wrong attempts, show step-level hint
+          effectiveScaffold = 'step';
+        }
+
         shakeElement(input);
         playWrongSound();
-        input.value = '';
-        showCellFeedback(pos, false, getCellHintMessage(p, pos, borrowInfo));
+
+        if (effectiveScaffold === 'full') {
+          // Full guidance: show answer, let student type it
+          input.value = '';
+          input.classList.add('wrong-cell');
+          setTimeout(() => input.classList.remove('wrong-cell'), 1500);
+        } else if (effectiveScaffold === 'rethink') {
+          // Rethink: red border, can retry
+          input.value = '';
+          input.classList.add('wrong-cell');
+          setTimeout(() => input.classList.remove('wrong-cell'), 1500);
+        } else {
+          // Step: show formula without answer
+          input.value = '';
+          input.classList.add('wrong-cell');
+          setTimeout(() => input.classList.remove('wrong-cell'), 1500);
+        }
+
+        showCellFeedback(pos, false, getCellHintMessage(p, pos, borrowInfo, effectiveScaffold), effectiveScaffold);
       }
     };
 
