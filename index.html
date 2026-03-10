@@ -162,33 +162,29 @@ body {
 .carry-input:focus { background: #4e3723; }
 .carry-cell { width: 40px; height: 44px; }
 
-/* Borrow display for subtraction */
-.borrow-cell {
+/* Borrow display for subtraction — clean annotation style */
+.borrow-annotated-cell {
   position: relative;
   width: 80px; height: 90px;
   display: flex; align-items: center; justify-content: center;
 }
-.borrow-cell .borrow-adjusted {
+.borrow-annotated-cell .main-digit {
   font-size: 72px; font-weight: bold;
 }
-.borrow-cell .borrow-tag {
-  position: absolute; top: 2px; right: 2px;
-  font-size: 14px; color: #ff9800; font-weight: bold;
-  background: rgba(255,152,0,0.15); border-radius: 4px; padding: 1px 4px;
-  line-height: 1.2;
+.borrow-annotated-cell .borrow-note {
+  position: absolute; top: -2px; right: -28px;
+  font-size: 13px; color: #ff9800; font-weight: bold;
+  white-space: nowrap; line-height: 1.2;
 }
-.borrow-lent-cell {
-  position: relative;
-  width: 80px; height: 90px;
-  display: flex; align-items: center; justify-content: center;
+/* Hint text above answer input */
+.digit-hint {
+  font-size: 14px; color: #90a4ae; text-align: center;
+  margin-bottom: 2px; min-height: 18px;
 }
-.borrow-lent-cell .original-digit {
-  font-size: 48px; font-weight: bold; opacity: 0.35;
-  text-decoration: line-through;
-  position: absolute; left: 8px; top: 8px;
-}
-.borrow-lent-cell .adjusted-digit {
-  font-size: 72px; font-weight: bold;
+/* Borrow label floating above the ones column */
+.borrow-label-row {
+  font-size: 15px; color: #ff9800; font-weight: bold;
+  text-align: center; min-height: 22px;
 }
 
 /* Per-cell instant feedback toast */
@@ -358,11 +354,9 @@ body {
   .carry-input { width: 32px; height: 36px; font-size: 22px; }
   .carry-cell { width: 32px; height: 36px; }
   .answer-single-input { width: 220px; height: 64px; font-size: 44px; }
-  .borrow-cell, .borrow-lent-cell { width: 56px; height: 64px; }
-  .borrow-cell .borrow-adjusted { font-size: 48px; }
-  .borrow-cell .borrow-tag { font-size: 11px; }
-  .borrow-lent-cell .original-digit { font-size: 32px; }
-  .borrow-lent-cell .adjusted-digit { font-size: 48px; }
+  .borrow-annotated-cell { width: 56px; height: 64px; }
+  .borrow-annotated-cell .main-digit { font-size: 48px; }
+  .borrow-annotated-cell .borrow-note { font-size: 11px; right: -22px; }
 }
 </style>
 </head>
@@ -451,14 +445,6 @@ body {
   </div>
 
   <div class="form-group">
-    <label>作答模式</label>
-    <div class="radio-group">
-      <label><input type="radio" name="mode" value="direct" checked> 直接輸入答案</label>
-      <label><input type="radio" name="mode" value="guided"> 逐步引導輸入</label>
-    </div>
-  </div>
-
-  <div class="form-group">
     <label>語音設定（TTS）</label>
     <div class="toggle-row" style="margin-bottom:12px;">
       <div class="toggle-switch" id="tts-toggle" onclick="toggleSwitch(this)">
@@ -469,6 +455,7 @@ body {
     <div id="tts-rate-group" style="display:none;">
       <label style="font-size:0.9rem; color:#90caf9; margin-bottom:4px;">語速：<span id="tts-rate-value">1.0</span>x</label>
       <input type="range" id="tts-rate" min="0.5" max="2.0" step="0.1" value="1.0" style="width:100%; accent-color:#64b5f6;" oninput="document.getElementById('tts-rate-value').textContent = this.value">
+      <button type="button" onclick="testTTS()" style="margin-top:8px; padding:8px 16px; background:#1565c0; color:#fff; border:none; border-radius:8px; font-size:0.9rem; cursor:pointer;">測試語音</button>
     </div>
   </div>
 
@@ -559,6 +546,28 @@ function toggleTTS() {
   document.getElementById('tts-btn').textContent = ttsEnabled ? '🔊' : '🔇';
 }
 
+function unlockSpeechSynthesis() {
+  try {
+    if (!window.speechSynthesis) return;
+    const utter = new SpeechSynthesisUtterance('');
+    utter.volume = 0;
+    utter.lang = 'zh-TW';
+    speechSynthesis.speak(utter);
+  } catch (e) {}
+}
+
+function testTTS() {
+  try {
+    if (!window.speechSynthesis) { showToast('此瀏覽器不支援語音'); return; }
+    speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance('語音測試');
+    utter.lang = 'zh-TW';
+    utter.rate = parseFloat(document.getElementById('tts-rate').value) || 1.0;
+    if (ttsVoice) utter.voice = ttsVoice;
+    speechSynthesis.speak(utter);
+  } catch (e) { showToast('語音測試失敗'); }
+}
+
 // ===== SETUP HELPERS =====
 function toggleSwitch(el) {
   el.classList.toggle('on');
@@ -606,7 +615,7 @@ function readConfig() {
     timerOn,
     timerMinutes: timerOn ? parseInt(document.getElementById('timer-minutes').value) || 5 : 0,
     scaffold: getRadioValue('scaffold'),
-    mode: getRadioValue('mode'),
+    mode: 'guided',
     sheetsUrl: document.getElementById('sheets-url').value.trim(),
     ttsEnabled: document.getElementById('tts-toggle').classList.contains('on'),
     ttsRate: parseFloat(document.getElementById('tts-rate').value) || 1.0
@@ -881,6 +890,8 @@ function showScreen(id) {
 function startPractice() {
   config = readConfig();
   if (!config) return;
+  // Unlock speechSynthesis on user gesture (click)
+  unlockSpeechSynthesis();
   ttsEnabled = config.ttsEnabled;
   ttsRate = config.ttsRate;
   document.getElementById('tts-btn').textContent = ttsEnabled ? '🔊' : '🔇';
@@ -920,7 +931,7 @@ function showProblem() {
 
   if (currentProblem.op === '÷') {
     renderDivision(area);
-  } else if (currentProblem.op === '×' && config.mode === 'guided') {
+  } else if (currentProblem.op === '×') {
     renderMultiplicationGuided(area);
   } else {
     renderStandard(area);
@@ -941,7 +952,7 @@ function renderStandard(area) {
 
   // Precompute borrow info for subtraction
   let borrowInfo = null;
-  if (needBorrow && config.mode === 'guided') {
+  if (needBorrow) {
     borrowInfo = precomputeBorrow(p.a, p.b);
   }
 
@@ -949,8 +960,8 @@ function renderStandard(area) {
   const colCount = totalCols;
   html += `<div class="vertical-problem" style="grid-template-columns: repeat(${colCount}, 80px);" id="vp-grid">`;
 
-  // Row 0: Carry row (only for addition in guided mode)
-  if (config.mode === 'guided' && needCarry) {
+  // Row 0: Carry row (for addition)
+  if (needCarry) {
     for (let c = 0; c < colCount; c++) {
       const pos = colCount - 1 - c;
       if (pos > 0 && pos <= maxLen) {
@@ -961,7 +972,21 @@ function renderStandard(area) {
     }
   }
 
-  // Row 1: First number (right-aligned) — with borrow visuals for subtraction
+  // Row 0.5: Borrow annotation row (only for subtraction with borrow in guided mode)
+  if (borrowInfo) {
+    for (let c = 0; c < colCount; c++) {
+      const pos = colCount - 1 - c;
+      if (c === 0) {
+        html += `<div class="borrow-label-row"></div>`;
+      } else if (borrowInfo[pos] && borrowInfo[pos].needsBorrow) {
+        html += `<div class="borrow-label-row">借10↓</div>`;
+      } else {
+        html += `<div class="borrow-label-row"></div>`;
+      }
+    }
+  }
+
+  // Row 1: First number (right-aligned) — always show original digits clearly
   for (let c = 0; c < colCount; c++) {
     const pos = colCount - 1 - c;
     const digitIdx = aStr.length - 1 - pos;
@@ -969,32 +994,18 @@ function renderStandard(area) {
       html += `<div class="cell"></div>`;
     } else if (digitIdx >= 0 && digitIdx < aStr.length && borrowInfo && pos < borrowInfo.length) {
       const bi = borrowInfo[pos];
+      // Always show original digit, with small orange annotation if affected by borrow
+      html += `<div class="borrow-annotated-cell ${posClass(pos)}">`;
+      html += `<span class="main-digit">${bi.originalDigit}</span>`;
       if (bi.needsBorrow && bi.lentToLower) {
-        // Both borrowed from above AND needs to borrow from next: show strikethrough original, adjusted+10
-        html += `<div class="borrow-cell ${posClass(pos)}">`;
-        html += `<span class="original-digit">${bi.originalDigit}</span>`;
-        html += `<span class="borrow-adjusted">${bi.displayDigit}</span>`;
-        html += `<span class="borrow-tag">借10</span>`;
-        html += `</div>`;
+        // Both: borrowed +10 and lent -1 to lower
+        html += `<span class="borrow-note">${bi.originalDigit}→${bi.displayDigit}</span>`;
       } else if (bi.needsBorrow) {
-        // Needs to borrow: show adjusted digit (original+10 minus any prior borrow) with 借10 tag
-        html += `<div class="borrow-cell ${posClass(pos)}">`;
-        if (bi.borrowedFrom) {
-          html += `<span class="original-digit">${bi.originalDigit}</span>`;
-        }
-        html += `<span class="borrow-adjusted">${bi.displayDigit}</span>`;
-        html += `<span class="borrow-tag">借10</span>`;
-        html += `</div>`;
+        html += `<span class="borrow-note">+10→${bi.displayDigit}</span>`;
       } else if (bi.lentToLower) {
-        // Lent to lower position: show strikethrough original, adjusted digit (original-1)
-        html += `<div class="borrow-lent-cell ${posClass(pos)}">`;
-        html += `<span class="original-digit">${bi.originalDigit}</span>`;
-        html += `<span class="adjusted-digit">${bi.displayDigit}</span>`;
-        html += `</div>`;
-      } else {
-        // Normal digit
-        html += `<div class="cell ${posClass(pos)}">${aStr[digitIdx]}</div>`;
+        html += `<span class="borrow-note">-1→${bi.displayDigit}</span>`;
       }
+      html += `</div>`;
     } else if (digitIdx >= 0 && digitIdx < aStr.length) {
       html += `<div class="cell ${posClass(pos)}">${aStr[digitIdx]}</div>`;
     } else {
@@ -1018,13 +1029,23 @@ function renderStandard(area) {
   // Row 3: Separator line
   html += `<div class="separator" style="grid-column: 1 / -1;"></div>`;
 
-  // Row 4: Answer
-  if (config.mode === 'direct') {
-    html += `<div style="grid-column: 1 / -1; display: flex; justify-content: flex-end; padding: 4px 0;">`;
-    html += `<input class="answer-single-input" id="answer-direct" type="number" inputmode="numeric" autofocus>`;
-    html += `</div>`;
-  } else {
-    // Guided: individual digit inputs (answer only, no carry inputs for subtraction)
+  // Row 4: Hint row above answer (for subtraction with borrow, or addition with carry)
+  if (borrowInfo) {
+    for (let c = 0; c < colCount; c++) {
+      const pos = colCount - 1 - c;
+      const digitIdx = ansStr.length - 1 - pos;
+      if (digitIdx >= 0 && digitIdx < ansStr.length && borrowInfo[pos]) {
+        const bi = borrowInfo[pos];
+        const db = getDigitAt(p.b, pos);
+        html += `<div class="digit-hint">(${bi.displayDigit}-${db}=?)</div>`;
+      } else {
+        html += `<div class="digit-hint"></div>`;
+      }
+    }
+  }
+
+  // Row 5: Answer — always guided (individual digit inputs)
+  {
     for (let c = 0; c < colCount; c++) {
       const pos = colCount - 1 - c;
       const digitIdx = ansStr.length - 1 - pos;
@@ -1045,32 +1066,14 @@ function renderStandard(area) {
   // Scaffold area (kept for direct mode)
   html += '<div id="scaffold-area"></div>';
 
-  // Confirm button
-  if (config.mode === 'direct') {
-    html += '<button class="btn-confirm" id="btn-check" onclick="checkAnswerDirect()">確認 ✓</button>';
-  }
-
   area.innerHTML = html;
 
   setTimeout(() => {
-    const focusEl = config.mode === 'direct'
-      ? document.getElementById('answer-direct')
-      : document.getElementById('ans-0');
+    const focusEl = document.getElementById('ans-0');
     if (focusEl) focusEl.focus();
   }, 100);
 
-  if (config.mode === 'direct') {
-    const input = document.getElementById('answer-direct');
-    if (input) {
-      input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') checkAnswerDirect();
-      });
-    }
-  }
-
-  if (config.mode === 'guided') {
-    setupGuidedListeners();
-  }
+  setupGuidedListeners();
 }
 
 // ===== GUIDED MODE LISTENERS =====
@@ -1513,30 +1516,18 @@ function renderDivision(area) {
 
   html += '<div id="scaffold-area" style="margin-top:12px;"></div>';
 
-  if (config.mode === 'direct') {
-    html += `<div style="margin-top:20px;">`;
-    html += `<input class="answer-single-input" id="answer-direct" type="number" autofocus>`;
-    html += `</div>`;
-    html += `<button class="btn-confirm" id="btn-check" onclick="checkAnswerDirect()">確認 ✓</button>`;
-  } else {
-    // Guided division
-    html += `<div style="margin-top:16px; font-size:1.2rem; color:#bbdefb;" id="div-guided-area">`;
-    html += renderDivisionGuided(p);
-    html += `</div>`;
-  }
+  // Always guided division
+  html += `<div style="margin-top:16px; font-size:1.2rem; color:#bbdefb;" id="div-guided-area">`;
+  html += renderDivisionGuided(p);
+  html += `</div>`;
 
   html += '</div>';
   area.innerHTML = html;
 
   setTimeout(() => {
-    const focusEl = document.getElementById('answer-direct') || document.getElementById('div-ans');
+    const focusEl = document.getElementById('div-ans');
     if (focusEl) focusEl.focus();
   }, 100);
-
-  if (config.mode === 'direct') {
-    const input = document.getElementById('answer-direct');
-    if (input) input.addEventListener('keydown', e => { if (e.key === 'Enter') checkAnswerDirect(); });
-  }
 }
 
 function renderDivisionGuided(p) {
