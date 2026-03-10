@@ -418,6 +418,7 @@ body {
     <div class="top-bar-right">
       <span id="timer-display">00:00</span>
       <button id="mute-btn" onclick="toggleMute()">🔊</button>
+      <button id="abandon-btn" onclick="abandonPractice()" style="background:#c62828; color:#fff; border:none; border-radius:8px; padding:6px 14px; font-size:1rem; cursor:pointer;">放棄</button>
     </div>
   </div>
   <div class="problem-area" id="problem-area">
@@ -825,7 +826,7 @@ function renderStandard(area) {
     for (let c = 0; c < colCount; c++) {
       const pos = colCount - 1 - c;
       if (pos > 0 && pos <= maxLen) {
-        html += `<div class="cell carry-cell"><input class="carry-input" id="carry-${pos}" maxlength="1" data-pos="${pos}" disabled></div>`;
+        html += `<div class="cell carry-cell"><input class="carry-input" id="carry-${pos}" maxlength="1" inputmode="numeric" data-pos="${pos}" disabled></div>`;
       } else {
         html += `<div class="cell carry-cell"></div>`;
       }
@@ -865,7 +866,7 @@ function renderStandard(area) {
   if (config.mode === 'direct') {
     // Single input spanning answer area
     html += `<div style="grid-column: 1 / -1; display: flex; justify-content: flex-end; padding: 4px 0;">`;
-    html += `<input class="answer-single-input" id="answer-direct" type="number" autofocus>`;
+    html += `<input class="answer-single-input" id="answer-direct" type="number" inputmode="numeric" autofocus>`;
     html += `</div>`;
   } else {
     // Guided: individual digit inputs
@@ -874,11 +875,7 @@ function renderStandard(area) {
       const digitIdx = ansStr.length - 1 - pos;
       if (digitIdx >= 0 && digitIdx < ansStr.length) {
         const locked = pos !== 0; // start from ones
-        html += `<div class="cell"><input class="digit-input ${posClass(pos)} ${locked ? 'locked' : ''}" id="ans-${pos}" maxlength="1" data-pos="${pos}" ${locked ? 'disabled' : ''} ${pos === 0 ? 'autofocus' : ''}></div>`;
-      } else if (pos === ansStr.length && ansStr.length > Math.max(aStr.length, bStr.length)) {
-        // Overflow position
-        const locked = true;
-        html += `<div class="cell"><input class="digit-input ${posClass(pos)} locked" id="ans-${pos}" maxlength="1" data-pos="${pos}" disabled></div>`;
+        html += `<div class="cell"><input class="digit-input ${posClass(pos)} ${locked ? 'locked' : ''}" id="ans-${pos}" maxlength="1" inputmode="numeric" data-pos="${pos}" ${locked ? 'disabled' : ''} ${pos === 0 ? 'autofocus' : ''}></div>`;
       } else {
         html += `<div class="cell"></div>`;
       }
@@ -922,12 +919,16 @@ function renderStandard(area) {
 }
 
 // ===== GUIDED MODE LISTENERS =====
+function parseDigitValue(val) {
+  // Normalize full-width digits to half-width, strip non-digits
+  const normalized = val.replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0)).replace(/[^0-9]/g, '');
+  if (normalized === '') return NaN;
+  return parseInt(normalized, 10);
+}
+
 function setupGuidedListeners() {
   const p = currentProblem;
   const ansStr = String(p.answer);
-  const maxLen = Math.max(String(p.a).length, String(p.b).length, ansStr.length);
-  const totalCols = maxLen + 1;
-  let currentPos = 0;
 
   // Compute expected carry/borrow for each position
   const carries = computeCarries(p);
@@ -936,29 +937,41 @@ function setupGuidedListeners() {
     const input = document.getElementById(`ans-${pos}`);
     if (!input) return;
     input.addEventListener('input', () => {
-      const val = input.value.trim();
-      if (val === '') return;
+      const rawVal = input.value.trim();
+      if (rawVal === '') return;
+
+      const parsed = parseDigitValue(rawVal);
+      // Replace with cleaned value
+      if (isNaN(parsed)) { input.value = ''; return; }
+      input.value = String(parsed % 10);
 
       const expectedDigit = getDigitAt(p.answer, pos);
-      if (parseInt(val) === expectedDigit) {
+      if (parsed % 10 === expectedDigit) {
         input.classList.add('correct-cell');
         input.disabled = true;
+        playCorrectSound();
 
         // Check if carry/borrow needed
         const carryInput = document.getElementById(`carry-${pos + 1}`);
         if (carryInput && carries[pos + 1] !== undefined && carries[pos + 1] !== 0) {
           carryInput.disabled = false;
           carryInput.focus();
-          carryInput.addEventListener('input', function handler() {
-            if (parseInt(carryInput.value) === carries[pos + 1]) {
+          // Use a one-time approach: remove old listener if any
+          const carryHandler = () => {
+            const carryVal = parseDigitValue(carryInput.value);
+            if (isNaN(carryVal)) { carryInput.value = ''; return; }
+            carryInput.value = String(carryVal);
+            if (carryVal === carries[pos + 1]) {
               carryInput.disabled = true;
               carryInput.style.background = '#2e7d32';
+              carryInput.removeEventListener('input', carryHandler);
               unlockNext(pos + 1);
-            } else if (carryInput.value !== '') {
+            } else {
               shakeElement(carryInput);
               carryInput.value = '';
             }
-          });
+          };
+          carryInput.addEventListener('input', carryHandler);
         } else {
           unlockNext(pos + 1);
         }
@@ -973,6 +986,15 @@ function setupGuidedListeners() {
   };
 
   const unlockNext = (nextPos) => {
+    // Only unlock if this position exists in the answer
+    if (nextPos >= ansStr.length) {
+      // All digits completed
+      playCorrectSound();
+      showStars();
+      results.push({ problem: p, studentAnswer: p.answer, correct: true, time: elapsedSeconds });
+      setTimeout(nextProblem, 800);
+      return;
+    }
     const nextInput = document.getElementById(`ans-${nextPos}`);
     if (nextInput) {
       nextInput.classList.remove('locked');
@@ -980,7 +1002,7 @@ function setupGuidedListeners() {
       nextInput.focus();
       handleDigitInput(nextPos);
     } else {
-      // All done
+      // All done (no more inputs)
       playCorrectSound();
       showStars();
       results.push({ problem: p, studentAnswer: p.answer, correct: true, time: elapsedSeconds });
@@ -1021,7 +1043,7 @@ function computeCarries(p) {
 function checkAnswerDirect() {
   const input = document.getElementById('answer-direct');
   if (!input) return;
-  const val = parseInt(input.value);
+  const val = parseInt(input.value, 10);
   const p = currentProblem;
 
   if (isNaN(val)) return;
@@ -1208,7 +1230,7 @@ function renderDivision(area) {
 function renderDivisionGuided(p) {
   let html = `<div style="margin-top:8px;">`;
   html += `<p style="margin-bottom:12px;">想想看：${p.b} × ? = ${p.a}</p>`;
-  html += `<input class="digit-input" id="div-ans" maxlength="${String(p.answer).length}" style="width:${Math.max(80, String(p.answer).length * 60)}px;" autofocus>`;
+  html += `<input class="digit-input" id="div-ans" maxlength="${String(p.answer).length}" inputmode="numeric" style="width:${Math.max(80, String(p.answer).length * 60)}px;" autofocus>`;
   html += `<button class="btn-confirm" style="margin-left:12px;" onclick="checkDivisionGuided()">確認</button>`;
   html += `</div>`;
   return html;
@@ -1217,7 +1239,7 @@ function renderDivisionGuided(p) {
 function checkDivisionGuided() {
   const input = document.getElementById('div-ans');
   if (!input) return;
-  const val = parseInt(input.value);
+  const val = parseDigitValue(input.value);
   const p = currentProblem;
 
   if (isNaN(val)) return;
@@ -1272,7 +1294,7 @@ function renderMultStep1(area, p) {
   html += `步驟 1：先算個位 <span class="highlight-digit">${ones}</span> × ${multiplier} = ?`;
   html += `</div>`;
   html += `<div style="margin-top:16px;">`;
-  html += `<input class="digit-input" id="mult-step-input" style="width:120px;" autofocus>`;
+  html += `<input class="digit-input" id="mult-step-input" inputmode="numeric" style="width:120px;" autofocus>`;
   html += `<button class="btn-confirm" style="margin-left:12px;" onclick="checkMultStep(1)">確認</button>`;
   html += `</div>`;
   html += `<div id="scaffold-area"></div>`;
@@ -1295,13 +1317,13 @@ function renderMultStep1(area, p) {
 function checkMultStep(step) {
   const input = document.getElementById('mult-step-input');
   if (!input) return;
-  const val = parseInt(input.value);
+  const val = parseDigitValue(input.value);
   if (isNaN(val)) return;
 
   const area = document.getElementById('problem-area');
-  const origA = parseInt(area.dataset.origA);
-  const origB = parseInt(area.dataset.origB);
-  const answer = parseInt(area.dataset.answer);
+  const origA = parseInt(area.dataset.origA, 10);
+  const origB = parseInt(area.dataset.origB, 10);
+  const answer = parseInt(area.dataset.answer, 10);
   const aStr = String(origA);
 
   if (step === 1) {
@@ -1321,7 +1343,7 @@ function checkMultStep(step) {
       html += `步驟 2：十位的 <span class="highlight-digit">${tens}</span> 其實是 <span class="highlight-digit">${tensValue}</span>，${tensValue} × ${origB} = ?`;
       html += `</div>`;
       html += `<div style="margin-top:16px;">`;
-      html += `<input class="digit-input" id="mult-step-input" style="width:160px;" autofocus>`;
+      html += `<input class="digit-input" id="mult-step-input" inputmode="numeric" style="width:160px;" autofocus>`;
       html += `<button class="btn-confirm" style="margin-left:12px;" onclick="checkMultStep(2)">確認</button>`;
       html += `</div>`;
       html += `<div id="scaffold-area"></div>`;
@@ -1356,7 +1378,7 @@ function checkMultStep(step) {
       html += `步驟 3：把 ${partial1} 和 ${expected} 加起來 = ?`;
       html += `</div>`;
       html += `<div style="margin-top:16px;">`;
-      html += `<input class="digit-input" id="mult-step-input" style="width:160px;" autofocus>`;
+      html += `<input class="digit-input" id="mult-step-input" inputmode="numeric" style="width:160px;" autofocus>`;
       html += `<button class="btn-confirm" style="margin-left:12px;" onclick="checkMultStep(3)">確認</button>`;
       html += `</div>`;
       html += `<div id="scaffold-area"></div>`;
@@ -1471,7 +1493,7 @@ function renderResults() {
     html += `<button class="btn-upload" onclick="uploadToSheets()">☁️ 上傳 Sheets</button>`;
   }
   html += `<button class="btn-retry" onclick="retryPractice()">🔄 再練一次</button>`;
-  html += `<button class="btn-reset" onclick="resetSetup()">⚙️ 重新設定</button>`;
+  html += `<button class="btn-reset" onclick="resetSetup()">⚙️ 回到選單</button>`;
   html += `</div>`;
 
   document.getElementById('result-content').innerHTML = html;
@@ -1568,6 +1590,13 @@ function retryPractice() {
   showScreen('practice-screen');
   startTimer();
   showProblem();
+}
+
+function abandonPractice() {
+  if (!confirm('確定要放棄練習嗎？')) return;
+  stopTimer();
+  results = [];
+  showScreen('setup-screen');
 }
 
 function resetSetup() {
