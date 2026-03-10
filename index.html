@@ -505,6 +505,7 @@ let retryAllowed = false;
 // For guided mode state
 let guidedStep = 0;
 let cellRetryCount = {}; // Track per-cell wrong attempts for scaffold escalation
+let currentHadError = false; // Track if current problem had any error
 
 // ===== TTS STATE =====
 let ttsEnabled = false;
@@ -969,6 +970,7 @@ function showProblem() {
   retryAllowed = false;
   guidedStep = 0;
   cellRetryCount = {};
+  currentHadError = false;
   document.getElementById('progress-info').textContent = `第 ${currentIdx + 1} / ${problems.length} 題`;
 
   // TTS: announce the problem
@@ -1278,6 +1280,7 @@ function setupGuidedListeners() {
           if (carryInput && carries[pos + 1] !== undefined && carries[pos + 1] !== 0) {
             carryInput.disabled = false;
             carryInput.focus();
+            let carryRetryCount = 0;
             const carryHandler = () => {
               const carryVal = parseDigitValue(carryInput.value);
               if (isNaN(carryVal)) { carryInput.value = ''; return; }
@@ -1288,8 +1291,38 @@ function setupGuidedListeners() {
                 carryInput.removeEventListener('input', carryHandler);
                 unlockNext(pos + 1);
               } else {
+                currentHadError = true;
+                carryRetryCount++;
                 shakeElement(carryInput);
+                playWrongSound();
                 carryInput.value = '';
+                // Carry hint based on scaffold level
+                const da = getDigitAt(p.a, pos);
+                const db = getDigitAt(p.b, pos);
+                let carryIn = 0;
+                if (pos > 0) {
+                  let c = 0;
+                  for (let pp = 0; pp < pos; pp++) {
+                    const s = getDigitAt(p.a, pp) + getDigitAt(p.b, pp) + c;
+                    c = Math.floor(s / 10);
+                  }
+                  carryIn = c;
+                }
+                const colSum = da + db + carryIn;
+                const carryText = carryIn > 0 ? ` + 進位${carryIn}` : '';
+                let effectiveScaffold = config.scaffold;
+                if (effectiveScaffold === 'rethink' && carryRetryCount >= 2) {
+                  effectiveScaffold = 'step';
+                }
+                let msg;
+                if (effectiveScaffold === 'rethink') {
+                  msg = `進位再想想！這個數字要進到${posLabel(pos + 1)}位喔`;
+                } else if (effectiveScaffold === 'step') {
+                  msg = `${posLabel(pos)}位 ${da}+${db}${carryText}=${colSum}，超過10要進位，進位的數字是 ?`;
+                } else {
+                  msg = `${posLabel(pos)}位 ${da}+${db}${carryText}=${colSum}，超過10要進位，進位填 ${carries[pos + 1]}`;
+                }
+                showCellFeedback(pos, false, msg, effectiveScaffold);
               }
             };
             carryInput.addEventListener('input', carryHandler);
@@ -1300,6 +1333,7 @@ function setupGuidedListeners() {
         unlockNext(pos + 1);
       } else {
         // Wrong answer for this cell
+        currentHadError = true;
         if (!cellRetryCount[pos]) cellRetryCount[pos] = 0;
         cellRetryCount[pos]++;
 
@@ -1349,7 +1383,7 @@ function setupGuidedListeners() {
       playCorrectSound();
       showStars();
       speak('答對了！');
-      results.push({ problem: p, studentAnswer: p.answer, correct: true, time: elapsedSeconds });
+      results.push({ problem: p, studentAnswer: p.answer, correct: true, hadError: currentHadError, time: elapsedSeconds });
       setTimeout(nextProblem, 800);
       return;
     }
@@ -1363,7 +1397,7 @@ function setupGuidedListeners() {
       playCorrectSound();
       showStars();
       speak('答對了！');
-      results.push({ problem: p, studentAnswer: p.answer, correct: true, time: elapsedSeconds });
+      results.push({ problem: p, studentAnswer: p.answer, correct: true, hadError: currentHadError, time: elapsedSeconds });
       setTimeout(nextProblem, 800);
     }
   };
@@ -1444,10 +1478,11 @@ function checkAnswerDirect() {
     speak('答對了！');
     input.style.borderColor = '#43a047';
     input.style.background = '#1b3a1b';
-    results.push({ problem: p, studentAnswer: val, correct: true, time: elapsedSeconds });
+    results.push({ problem: p, studentAnswer: val, correct: true, hadError: currentHadError, time: elapsedSeconds });
     setTimeout(nextProblem, 800);
   } else {
     // Wrong
+    currentHadError = true;
     playWrongSound();
     shakeElement(document.getElementById('problem-area'));
     if (!retryAllowed) {
@@ -1466,7 +1501,7 @@ function checkAnswerDirect() {
       }
     } else {
       // Second wrong - record and move on
-      results.push({ problem: p, studentAnswer: val, correct: false, time: elapsedSeconds });
+      results.push({ problem: p, studentAnswer: val, correct: false, hadError: true, time: elapsedSeconds });
       setTimeout(nextProblem, 500);
     }
   }
@@ -1629,9 +1664,10 @@ function checkDivisionGuided() {
     playCorrectSound();
     showStars();
     speak('答對了！');
-    results.push({ problem: p, studentAnswer: val, correct: true, time: elapsedSeconds });
+    results.push({ problem: p, studentAnswer: val, correct: true, hadError: currentHadError, time: elapsedSeconds });
     setTimeout(nextProblem, 800);
   } else {
+    currentHadError = true;
     playWrongSound();
     shakeElement(document.getElementById('problem-area'));
     if (!retryAllowed) {
@@ -1640,7 +1676,7 @@ function checkDivisionGuided() {
       input.value = '';
       input.focus();
     } else {
-      results.push({ problem: p, studentAnswer: val, correct: false, time: elapsedSeconds });
+      results.push({ problem: p, studentAnswer: val, correct: false, hadError: true, time: elapsedSeconds });
       setTimeout(nextProblem, 500);
     }
   }
@@ -1696,6 +1732,31 @@ function renderMultStep1(area, p) {
   document.getElementById('mult-step-input')?.addEventListener('keydown', e => { if (e.key === 'Enter') checkMultStep(1); });
 }
 
+// Multiplication step hint with carry awareness
+function showMultStepHint(factorA, factorB, expected, stepId) {
+  if (!cellRetryCount[stepId]) cellRetryCount[stepId] = 0;
+  cellRetryCount[stepId]++;
+
+  let effectiveScaffold = config.scaffold;
+  if (effectiveScaffold === 'rethink' && cellRetryCount[stepId] >= 2) {
+    effectiveScaffold = 'step';
+  }
+
+  const area = document.getElementById('scaffold-area');
+  if (!area) return;
+  let msg;
+  if (effectiveScaffold === 'rethink') {
+    msg = `再想想喔！${factorA} × ${factorB} 等於多少？`;
+  } else if (effectiveScaffold === 'step') {
+    msg = `${factorA} × ${factorB} = ?，想想看答案是多少`;
+  } else {
+    msg = `${factorA} × ${factorB} = ${expected}，答案是 ${expected}`;
+  }
+  const cssClass = effectiveScaffold === 'full' ? 'scaffold-full' : (effectiveScaffold === 'step' ? 'scaffold-step' : 'scaffold-hint');
+  area.innerHTML = `<div class="scaffold-msg ${cssClass}">${msg}</div>`;
+  speak(msg);
+}
+
 function checkMultStep(step) {
   const input = document.getElementById('mult-step-input');
   if (!input) return;
@@ -1738,9 +1799,13 @@ function checkMultStep(step) {
       setTimeout(() => document.getElementById('mult-step-input')?.focus(), 100);
       document.getElementById('mult-step-input')?.addEventListener('keydown', e => { if (e.key === 'Enter') checkMultStep(2); });
     } else {
+      currentHadError = true;
       playWrongSound();
       shakeElement(area);
-      showScaffold(-1);
+      // Step-specific carry-aware hints for multiplication
+      const ones = parseInt(aStr[aStr.length - 1]);
+      const expected1 = ones * origB;
+      showMultStepHint(ones, origB, expected1, 'mult-step-1');
       input.value = '';
     }
   } else if (step === 2) {
@@ -1771,9 +1836,11 @@ function checkMultStep(step) {
       setTimeout(() => document.getElementById('mult-step-input')?.focus(), 100);
       document.getElementById('mult-step-input')?.addEventListener('keydown', e => { if (e.key === 'Enter') checkMultStep(3); });
     } else {
+      currentHadError = true;
       playWrongSound();
       shakeElement(area);
-      showScaffold(-1);
+      // Step-specific carry-aware hints for multiplication
+      showMultStepHint(tensValue, origB, expected, 'mult-step-2');
       input.value = '';
     }
   } else if (step === 3) {
@@ -1781,9 +1848,10 @@ function checkMultStep(step) {
       playCorrectSound();
       showStars();
       speak('答對了！');
-      results.push({ problem: currentProblem, studentAnswer: val, correct: true, time: elapsedSeconds });
+      results.push({ problem: currentProblem, studentAnswer: val, correct: true, hadError: currentHadError, time: elapsedSeconds });
       setTimeout(nextProblem, 800);
     } else {
+      currentHadError = true;
       playWrongSound();
       shakeElement(area);
       if (!retryAllowed) {
@@ -1791,7 +1859,7 @@ function checkMultStep(step) {
         showScaffold(-1);
         input.value = '';
       } else {
-        results.push({ problem: currentProblem, studentAnswer: val, correct: false, time: elapsedSeconds });
+        results.push({ problem: currentProblem, studentAnswer: val, correct: false, hadError: true, time: elapsedSeconds });
         setTimeout(nextProblem, 500);
       }
     }
@@ -1818,7 +1886,7 @@ function finishPractice() {
   }
   // If time ran out, mark remaining as unanswered
   for (let i = results.length; i < problems.length; i++) {
-    results.push({ problem: problems[i], studentAnswer: '未作答', correct: false, time: elapsedSeconds });
+    results.push({ problem: problems[i], studentAnswer: '未作答', correct: false, hadError: true, time: elapsedSeconds });
   }
 
   playCelebrationSound();
@@ -1830,7 +1898,7 @@ function finishPractice() {
 
 // ===== RESULTS =====
 function renderResults() {
-  const correctCount = results.filter(r => r.correct).length;
+  const correctCount = results.filter(r => !r.hadError).length;
   const total = results.length;
   const rate = total > 0 ? Math.round((correctCount / total) * 100) : 0;
   const now = new Date();
@@ -1862,10 +1930,12 @@ function renderResults() {
   html += `<thead><tr><th>#</th><th>題目</th><th>你的答案</th><th>正確答案</th><th>結果</th></tr></thead>`;
   html += `<tbody>`;
   results.forEach((r, i) => {
-    const cls = r.correct ? 'correct-row' : 'wrong-row';
-    const mark = r.correct ? '✓' : '✗';
+    const isCorrect = !r.hadError;
+    const cls = isCorrect ? 'correct-row' : 'wrong-row';
+    const mark = isCorrect ? '✓' : '✗';
     const probStr = `${r.problem.a} ${r.problem.op} ${r.problem.b}`;
-    html += `<tr class="${cls}"><td>${i + 1}</td><td>${probStr}</td><td>${r.studentAnswer}</td><td>${r.problem.answer}</td><td>${mark}</td></tr>`;
+    const ansDisplay = r.hadError ? `${r.studentAnswer} (有錯誤)` : `${r.studentAnswer}`;
+    html += `<tr class="${cls}"><td>${i + 1}</td><td>${probStr}</td><td>${ansDisplay}</td><td>${r.problem.answer}</td><td>${mark}</td></tr>`;
   });
   html += `</tbody></table>`;
 
@@ -1897,7 +1967,7 @@ function getCSVData() {
   results.forEach(r => {
     const opName = opMap[config.ops.find(o => ({ add: '+', sub: '-', mul: '×', div: '÷' })[o] === r.problem.op)] || '';
     const probStr = `${r.problem.a}${r.problem.op}${r.problem.b}`;
-    const result = r.correct ? '正確' : '錯誤';
+    const result = r.hadError ? '錯誤' : '正確';
     csv += `${config.name},${dateStr},${opName},${config.digits1}位,${config.digits2}位,${config.allowCarry ? '允許' : '不允許'},${probStr},${r.studentAnswer},${r.problem.answer},${result},${elapsedSeconds}\n`;
   });
   return csv;
@@ -1926,7 +1996,7 @@ function copyToClipboard() {
   let tsv = '姓名\t日期時間\t運算\t第一數位數\t第二數位數\t進退位\t題目\t學生答案\t正確答案\t結果\t用時(秒)\n';
   results.forEach(r => {
     const probStr = `${r.problem.a}${r.problem.op}${r.problem.b}`;
-    const result = r.correct ? '正確' : '錯誤';
+    const result = r.hadError ? '錯誤' : '正確';
     tsv += `${config.name}\t${dateStr}\t${r.problem.op}\t${config.digits1}位\t${config.digits2}位\t${config.allowCarry ? '允許' : '不允許'}\t${probStr}\t${r.studentAnswer}\t${r.problem.answer}\t${result}\t${elapsedSeconds}\n`;
   });
 
@@ -1950,7 +2020,7 @@ function uploadToSheets() {
     problem: `${r.problem.a}${r.problem.op}${r.problem.b}`,
     studentAnswer: String(r.studentAnswer),
     correctAnswer: String(r.problem.answer),
-    result: r.correct ? '正確' : '錯誤',
+    result: r.hadError ? '錯誤' : '正確',
     timeSeconds: elapsedSeconds
   }));
 
